@@ -199,6 +199,49 @@ print(f"***** email ****\n{str(email_v1)}\n*******")
 ```
 
 
+### SOFAI Sampling Strategy
+
+Mellea includes the **SOFAI (Slow and Fast AI)** sampling strategy, which uses two different models in a coordinated approach:
+- **S1 Solver** (fast model): Iteratively attempts to solve with feedback-based repair
+- **S2 Solver** (slow model): Single fallback attempt when S1 fails or shows no improvement
+
+```python
+from mellea import MelleaSession
+from mellea.backends.ollama import OllamaModelBackend
+from mellea.stdlib.base import ChatContext
+from mellea.stdlib.sampling import SOFAISamplingStrategy
+
+# Set up backends
+s1_backend = OllamaModelBackend(model_id="llama3.2:1b")  # Fast model
+s2_backend = OllamaModelBackend(model_id="deepseek-r1:8b")  # Slow (Thinking) model
+
+# Create SOFAI strategy
+strategy = SOFAISamplingStrategy(
+    s1_solver_backend=s1_backend,
+    s2_solver_backend=s2_backend,
+    s2_solver_mode="fresh_start",  # Options: "fresh_start", "continue_chat", "best_attempt"
+    loop_budget=3,
+)
+
+# Use with instruct (requires ChatContext)
+m = MelleaSession(backend=s1_backend, ctx=ChatContext())
+result = m.instruct(
+    "Write a JSON object with name and greeting fields",
+    requirements=["Output must be valid JSON"],
+    strategy=strategy,
+)
+```
+
+**Key features:**
+- Three S2 solver modes for different use cases
+- Optional LLM-as-Judge with configurable feedback strategies (`simple`, `first_error`, `all_errors`)
+- Domain test cases for grounded validation feedback
+- Early failover on stagnation detection
+
+See [`docs/examples/sofai/sofai_graph_coloring.py`](docs/examples/sofai/sofai_graph_coloring.py) for a complete example, and [`test_sofai_modes.py`](test_sofai_modes.py) for comprehensive tests of all mode combinations.
+
+
+
 ## Getting Started with Generative Slots
 
 Generative slots allow you to define functions without implementing them.
