@@ -53,9 +53,9 @@ class SOFAISamplingStrategy(SamplingStrategy):
             s1_solver_backend: Backend for S1 Solver (fast model for iterative solving).
             s2_solver_backend: Backend for S2 Solver (slow model for fallback).
             s2_solver_mode: How to invoke S2 Solver:
-                - "fresh_start": Use original context and action (clean slate)
-                - "continue_chat": Continue from S1 Solver's conversation history
-                - "best_attempt": Pass best S1 Solver attempt with feedback summary
+                - "fresh_start": Same prompt as S1 solver (clean slate)
+                - "continue_chat": Fresh start input + S1 iteration/feedback history
+                - "best_attempt": Fresh start input + best S1 attempt + its feedback
             loop_budget: Maximum attempts for S1 Solver before falling back to S2 Solver.
             judge_backend: Optional third backend for LLM-as-Judge validation.
                 If provided, this backend will be used for validation when no custom
@@ -404,9 +404,9 @@ class SOFAISamplingStrategy(SamplingStrategy):
             return deepcopy(original_action), original_context
 
         elif s2_mode == "continue_chat":
-            # Continue from S1's conversation history
-            flog.info("SOFAI S2: Continuing from S1 Solver's conversation history.")
-            return last_action, last_result_ctx
+            # Fresh start input + S1's iteration and feedback history
+            flog.info("SOFAI S2: Continuing with original prompt plus S1 history.")
+            return deepcopy(original_action), last_result_ctx
 
         else:  # best_attempt
             # Find best S1 attempt and build informative prompt
