@@ -11,8 +11,8 @@ SOFAI uses:
 Note: This example uses a custom validator (check_graph_coloring). To use the
 optional judge_backend feature for LLM-as-Judge validation, you can:
 - Remove the validation_fn parameter from req()
-- Add judge_backend, feedback_strategy, and domain_testcase parameters to SOFAISamplingStrategy
-- feedback_strategy options: "validator_based", "simple", "first_error", "all_errors"
+- Add judge_backend and feedback_strategy parameters to SOFAISamplingStrategy
+- feedback_strategy options: "simple", "first_error", "all_errors"
 """
 
 import json
@@ -23,16 +23,11 @@ from mellea.backends.ollama import OllamaModelBackend
 from mellea.helpers.fancy_logger import FancyLogger
 from mellea.stdlib.base import ChatContext
 from mellea.stdlib.chat import Message
-from mellea.stdlib.requirement import req, ValidationResult
+from mellea.stdlib.requirement import ValidationResult, req
 from mellea.stdlib.sampling import SOFAISamplingStrategy
 
-
 # Define the graph coloring problem
-graph = {
-    "A": ["B"],
-    "B": ["A", "C"],
-    "C": ["B"],
-}
+graph = {"A": ["B"], "B": ["A", "C"], "C": ["B"]}
 colors = ["Red", "Blue"]
 
 graph_description = (
@@ -76,8 +71,7 @@ def check_graph_coloring(ctx) -> ValidationResult:
     output = ctx.last_output()
     if output is None:
         return ValidationResult(
-            False,
-            reason="No output found. " + output_format_instruction,
+            False, reason="No output found. " + output_format_instruction
         )
 
     # Parse the coloring
@@ -135,18 +129,6 @@ requirements = [
     )
 ]
 
-# Example domain test case for LLM-as-Judge validation
-# Uncomment and remove validation_fn above to use with judge_backend
-example_domain_testcase = """
-Test cases for graph coloring:
-1. Node A is adjacent to B (must have different colors)
-2. Node B is adjacent to A and C (must have different colors from both)
-3. Node C is adjacent to B (must have different color)
-4. Valid colors are: Red, Blue
-5. All nodes (A, B, C) must be present in the solution
-6. Output format must be valid JSON: {"A": "color", "B": "color", "C": "color"}
-"""
-
 
 def main():
     """Run the graph coloring example with SOFAI strategy."""
@@ -167,8 +149,7 @@ def main():
         s2_solver_mode="fresh_start",  # Options: "fresh_start", "continue_chat", "best_attempt"
         loop_budget=3,
         # judge_backend=judge_backend,  # Uncomment to use judge backend
-        # feedback_strategy="all_errors",  # Options: "validator_based", "simple", "first_error", "all_errors"
-        # domain_testcase=example_domain_testcase,  # Uncomment to use domain test cases for grounded feedback
+        # feedback_strategy="all_errors",  # Options: "simple", "first_error", "all_errors"
     )
 
     # Create session with S1 solver as default backend
@@ -192,7 +173,9 @@ def main():
     print(f"Number of attempts: {len(sampling_result.sample_generations)}")
 
     # Determine which solver produced each result
-    solver_1_attempts = min(sofai_strategy.loop_budget, len(sampling_result.sample_generations))
+    solver_1_attempts = min(
+        sofai_strategy.loop_budget, len(sampling_result.sample_generations)
+    )
 
     for i, (action, gen, val_list) in enumerate(
         zip(
@@ -201,7 +184,7 @@ def main():
             sampling_result.sample_validations,
         )
     ):
-        print(f"\n--- Attempt {i+1} ---")
+        print(f"\n--- Attempt {i + 1} ---")
 
         # Determine which solver was used
         if i < solver_1_attempts:

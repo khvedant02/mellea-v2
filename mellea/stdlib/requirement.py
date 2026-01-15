@@ -106,7 +106,6 @@ class Requirement(Component[str]):
         *,
         output_to_bool: Callable[[CBlock | str], bool] | None = default_output_to_bool,
         check_only: bool = False,
-        domain_testcase: str | None = None,
     ):
         """A Requirement, interpreted over a Context.
 
@@ -117,13 +116,11 @@ class Requirement(Component[str]):
             validation_fn: If provided, this function will be executed instead of using LLM-as-a-Judge. The `bool()` for the function's output defines whether the requirement passes.
             output_to_bool: An `output_to_bool` may be provided so that the library can translate the LLM-as-a-judge or ALora output into a boolean value. If none is provided, we will look for 'yes' (case-insensitive) in the LLMaJ output.
             check_only: If set, then `Instruction` will not include this requirement in its prompt.
-            domain_testcase: Optional test cases specific to this requirement for grounding LLM-as-Judge feedback. When provided, overrides the global domain_testcase in sampling strategies.
         """
         self.description = description
         self.output_to_bool = output_to_bool
         self.validation_fn = validation_fn
         self.check_only = check_only
-        self.domain_testcase = domain_testcase
 
         # Used for validation. Do not manually populate.
         self._output: str | None = None

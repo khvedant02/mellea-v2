@@ -440,3 +440,8 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/python,direnv,visualstudiocode,pycharm,macos,jetbrains
+
+*.md
+
+!README.md
+!CHANGELOG.md

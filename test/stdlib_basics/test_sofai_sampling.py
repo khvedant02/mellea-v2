@@ -1,7 +1,8 @@
 """Unit tests for SOFAISamplingStrategy."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from mellea.backends import Backend
 from mellea.stdlib.base import ChatContext, ModelOutputThunk
@@ -19,10 +20,7 @@ class TestSOFAIInit:
         s1 = MagicMock(spec=Backend)
         s2 = MagicMock(spec=Backend)
 
-        strategy = SOFAISamplingStrategy(
-            s1_solver_backend=s1,
-            s2_solver_backend=s2,
-        )
+        strategy = SOFAISamplingStrategy(s1_solver_backend=s1, s2_solver_backend=s2)
 
         assert strategy.s1_solver_backend is s1
         assert strategy.s2_solver_backend is s2
@@ -40,12 +38,10 @@ class TestSOFAIInit:
             s2_solver_backend=s2,
             judge_backend=judge,
             feedback_strategy="all_errors",
-            domain_testcase="Test case",
         )
 
         assert strategy.judge_backend is judge
         assert strategy.feedback_strategy == "all_errors"
-        assert strategy.domain_testcase == "Test case"
 
     def test_init_invalid_s1_backend_raises(self):
         """Test that non-Backend s1_solver raises TypeError."""
@@ -86,9 +82,7 @@ class TestSOFAIInit:
 
         with pytest.raises(ValueError):
             SOFAISamplingStrategy(
-                s1_solver_backend=s1,
-                s2_solver_backend=s2,
-                loop_budget=0,
+                s1_solver_backend=s1, s2_solver_backend=s2, loop_budget=0
             )
 
     def test_init_all_s2_modes(self):
@@ -209,10 +203,7 @@ class TestSOFAISelectBestAttempt:
         val1 = ValidationResult(True)
         val2 = ValidationResult(True)
 
-        sampled_val = [
-            [(req1, val1)],
-            [(req1, val2)],
-        ]
+        sampled_val = [[(req1, val1)], [(req1, val2)]]
 
         index = SOFAISamplingStrategy._select_best_attempt(sampled_val)
         assert index == 1  # Prefers later
@@ -226,7 +217,10 @@ class TestSOFAIParseJudgment:
         assert SOFAISamplingStrategy._parse_judgment("Yes") is True
         assert SOFAISamplingStrategy._parse_judgment("yes") is True
         assert SOFAISamplingStrategy._parse_judgment("YES") is True
-        assert SOFAISamplingStrategy._parse_judgment("Yes, the requirement is satisfied.") is True
+        assert (
+            SOFAISamplingStrategy._parse_judgment("Yes, the requirement is satisfied.")
+            is True
+        )
 
     def test_parse_no(self):
         """Test parsing 'No' responses."""
@@ -267,7 +261,10 @@ Error 2: Y
     def test_fallback_without_tags(self):
         """Test fallback to full response when no tags."""
         response = "No, the output is wrong."
-        assert SOFAISamplingStrategy._extract_feedback(response) == "No, the output is wrong."
+        assert (
+            SOFAISamplingStrategy._extract_feedback(response)
+            == "No, the output is wrong."
+        )
 
 
 @pytest.mark.qualitative
@@ -287,9 +284,7 @@ class TestSOFAIIntegration:
         s2 = OllamaModelBackend(model_id="llama3.2:1b")
 
         strategy = SOFAISamplingStrategy(
-            s1_solver_backend=s1,
-            s2_solver_backend=s2,
-            loop_budget=2,
+            s1_solver_backend=s1, s2_solver_backend=s2, loop_budget=2
         )
 
         m = start_session("ollama", model_id="llama3.2:1b", ctx=ChatContext())

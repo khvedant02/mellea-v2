@@ -39,13 +39,13 @@ class SOFAISamplingStrategy(SamplingStrategy):
         self,
         s1_solver_backend: Backend,
         s2_solver_backend: Backend,
-        s2_solver_mode: Literal["fresh_start", "continue_chat", "best_attempt"] = "fresh_start",
+        s2_solver_mode: Literal[
+            "fresh_start", "continue_chat", "best_attempt"
+        ] = "fresh_start",
         *,
         loop_budget: int = 3,
-        requirements: list[Requirement] | None = None,
         judge_backend: Backend | None = None,
-        feedback_strategy: Literal["validator_based", "simple", "first_error", "all_errors"] = "simple",
-        domain_testcase: str | None = None,
+        feedback_strategy: Literal["simple", "first_error", "all_errors"] = "simple",
     ):
         """Initialize SOFAI sampling strategy with two solvers.
 
@@ -57,20 +57,14 @@ class SOFAISamplingStrategy(SamplingStrategy):
                 - "continue_chat": Continue from S1 Solver's conversation history
                 - "best_attempt": Pass best S1 Solver attempt with feedback summary
             loop_budget: Maximum attempts for S1 Solver before falling back to S2 Solver.
-            requirements: Global requirements for all sampling operations.
             judge_backend: Optional third backend for LLM-as-Judge validation.
                 If provided, this backend will be used for validation when no custom
                 validation_fn is provided. Priority: validation_fn > judge_backend > session backend.
             feedback_strategy: Control detail level of LLM-as-Judge feedback:
-                - "validator_based": Use custom validator feedback as-is (for validation_fn)
                 - "simple": Binary yes/no validation, no detailed feedback (default)
                 - "first_error": Provide only the first mistake found with detailed feedback
                 - "all_errors": Provide comprehensive feedback about all mistakes
-                Note: This only affects LLM-as-Judge, not custom validators.
-            domain_testcase: Optional test cases for grounding LLM-as-Judge feedback.
-                When provided, test cases are included in judge prompts to provide more
-                specific, domain-grounded validation feedback. Only used with "first_error"
-                and "all_errors" modes. Can be overridden per-requirement.
+                Note: Only used when judge_backend is provided and requirement has no validation_fn.
 
         Raises:
             TypeError: If backends are not Backend instances.
@@ -96,10 +90,8 @@ class SOFAISamplingStrategy(SamplingStrategy):
         self.s2_solver_backend = s2_solver_backend
         self.s2_solver_mode = s2_solver_mode
         self.loop_budget = loop_budget
-        self.requirements = requirements
         self.judge_backend = judge_backend
         self.feedback_strategy = feedback_strategy
-        self.domain_testcase = domain_testcase
 
     @staticmethod
     def repair(
@@ -129,9 +121,7 @@ class SOFAISamplingStrategy(SamplingStrategy):
         )
 
         # Extract failed requirements with their validation reasons
-        failed_items = [
-            (req, val) for req, val in past_val[-1] if not val.as_bool()
-        ]
+        failed_items = [(req, val) for req, val in past_val[-1] if not val.as_bool()]
 
         # Build targeted feedback from validation reasons
         feedback_lines = []
@@ -253,22 +243,6 @@ class SOFAISamplingStrategy(SamplingStrategy):
         """
         assert self.judge_backend is not None
 
-        # Determine domain_testcase to use (per-requirement overrides global)
-        testcase_to_use = None
-        if hasattr(requirement, 'domain_testcase') and requirement.domain_testcase is not None:
-            testcase_to_use = requirement.domain_testcase
-        elif self.domain_testcase is not None:
-            testcase_to_use = self.domain_testcase
-
-        # Build domain testcase section if available
-        testcase_section = ""
-        if testcase_to_use and self.feedback_strategy in ["first_error", "all_errors"]:
-            testcase_section = (
-                f"\nDomain test cases for validation:\n"
-                f"{str(testcase_to_use)}\n\n"
-                f"Please ground your feedback in these test cases when evaluating the output.\n"
-            )
-
         # Build validation prompt based on feedback_strategy
         if self.feedback_strategy == "simple":
             validation_prompt = (
@@ -279,8 +253,7 @@ class SOFAISamplingStrategy(SamplingStrategy):
         elif self.feedback_strategy == "first_error":
             validation_prompt = (
                 f"Does the following output satisfy this requirement?\n\n"
-                f"Requirement: {requirement.description}\n"
-                f"{testcase_section}\n"
+                f"Requirement: {requirement.description}\n\n"
                 f"Instructions: Identify and report only the FIRST mistake you find. "
                 f"Answer with 'Yes' or 'No', then provide specific feedback about the first error "
                 f"in <feedback></feedback> tags.\n\n"
@@ -291,8 +264,7 @@ class SOFAISamplingStrategy(SamplingStrategy):
         elif self.feedback_strategy == "all_errors":
             validation_prompt = (
                 f"Does the following output satisfy this requirement?\n\n"
-                f"Requirement: {requirement.description}\n"
-                f"{testcase_section}\n"
+                f"Requirement: {requirement.description}\n\n"
                 f"Instructions: Identify ALL mistakes comprehensively. "
                 f"Answer with 'Yes' or 'No', then provide detailed feedback about every error found "
                 f"in <feedback></feedback> tags.\n\n"
@@ -303,7 +275,7 @@ class SOFAISamplingStrategy(SamplingStrategy):
                 f"2. Issue Y\n"
                 f"3. Issue Z</feedback>"
             )
-        else:  # "validator_based"
+        else:  # Fallback (shouldn't reach here with current enum)
             validation_prompt = (
                 f"Does the following output satisfy this requirement?\n\n"
                 f"Requirement: {requirement.description}\n\n"
@@ -326,14 +298,18 @@ class SOFAISamplingStrategy(SamplingStrategy):
         # Extract feedback for repair
         if self.feedback_strategy in ["first_error", "all_errors"]:
             feedback = self._extract_feedback(judgment_text)
-        elif self.feedback_strategy == "simple":
-            feedback = "Requirement not satisfied." if not is_valid else "Requirement satisfied."
-        else:  # "validator_based"
-            feedback = judgment_text
+        else:  # "simple" or fallback
+            feedback = (
+                "Requirement not satisfied."
+                if not is_valid
+                else "Requirement satisfied."
+            )
 
         return ValidationResult(result=is_valid, reason=feedback)
 
-    def _create_judge_validate_function(self, requirement: Requirement, model_options: dict | None = None):
+    def _create_judge_validate_function(
+        self, requirement: Requirement, model_options: dict | None = None
+    ):
         """Create a custom validation function that uses judge backend.
 
         Args:
@@ -346,9 +322,197 @@ class SOFAISamplingStrategy(SamplingStrategy):
 
         async def validate_with_judge(ctx: Context) -> ValidationResult:
             """Custom validator using judge backend."""
-            return await self._validate_with_judge_backend(requirement, ctx, model_options)
+            return await self._validate_with_judge_backend(
+                requirement, ctx, model_options
+            )
 
         return validate_with_judge
+
+    # =========================================================================
+    # Private Helper Methods
+    # =========================================================================
+
+    def _prepare_requirements_for_validation(
+        self, reqs: list[Requirement], model_options: dict | None = None
+    ) -> list[Requirement]:
+        """Prepare requirements for validation by wrapping with judge backend if needed.
+
+        If judge_backend is provided, wraps requirements that don't have a custom
+        validation_fn to use the judge backend instead.
+
+        Priority: validation_fn > judge_backend > session backend (fallback)
+
+        Args:
+            reqs: Original requirements list.
+            model_options: Model options to pass to judge backend.
+
+        Returns:
+            List of requirements ready for validation (some may be wrapped).
+        """
+        if self.judge_backend is None:
+            return reqs
+
+        reqs_for_validation = []
+        for req in reqs:
+            if req.validation_fn is None:
+                # Wrap with judge backend validation
+                wrapped_req = Requirement(
+                    description=req.description,
+                    validation_fn=self._create_judge_validate_function(
+                        req, model_options
+                    ),
+                    output_to_bool=req.output_to_bool,
+                    check_only=req.check_only,
+                )
+                reqs_for_validation.append(wrapped_req)
+            else:
+                # Use original requirement with custom validator
+                reqs_for_validation.append(req)
+        return reqs_for_validation
+
+    def _prepare_s2_context(
+        self,
+        s2_mode: str,
+        original_action: Component,
+        original_context: Context,
+        last_result_ctx: Context,
+        last_action: Component,
+        sampled_results: list[ModelOutputThunk],
+        sampled_scores: list[list[tuple[Requirement, ValidationResult]]],
+        loop_count: int,
+    ) -> tuple[Component, Context]:
+        """Prepare context and action for S2 Solver based on mode.
+
+        Args:
+            s2_mode: One of "fresh_start", "continue_chat", "best_attempt".
+            original_action: The original action passed to sample().
+            original_context: The original context passed to sample().
+            last_result_ctx: Context from last S1 iteration.
+            last_action: Action from last S1 iteration.
+            sampled_results: All S1 generation results.
+            sampled_scores: All S1 validation scores.
+            loop_count: Number of S1 iterations completed.
+
+        Returns:
+            Tuple of (action_for_s2, context_for_s2).
+        """
+        flog = FancyLogger.get_logger()
+
+        if s2_mode == "fresh_start":
+            # Clean slate: same prompt as S1
+            flog.info("SOFAI S2: Starting with fresh context (clean slate).")
+            return deepcopy(original_action), original_context
+
+        elif s2_mode == "continue_chat":
+            # Continue from S1's conversation history
+            flog.info("SOFAI S2: Continuing from S1 Solver's conversation history.")
+            return last_action, last_result_ctx
+
+        else:  # best_attempt
+            # Find best S1 attempt and build informative prompt
+            flog.info("SOFAI S2: Receiving best S1 Solver attempt with feedback.")
+
+            best_idx = self._select_best_attempt(sampled_scores)
+            best_result = sampled_results[best_idx]
+            best_validations = sampled_scores[best_idx]
+
+            passing_count = sum(1 for _, val in best_validations if val.as_bool())
+            flog.info(
+                f"SOFAI S2: Best attempt: #{best_idx + 1} with "
+                f"{passing_count}/{len(best_validations)} requirements passed."
+            )
+
+            # Build feedback summary
+            failed_reqs = [
+                (req, val) for req, val in best_validations if not val.as_bool()
+            ]
+            feedback_lines = []
+            for req, val in failed_reqs:
+                feedback_lines.append(
+                    f"  - {val.reason if val.reason else req.description}"
+                )
+
+            # Build prompt for S2
+            prompt_parts = [
+                f"Previous attempts were made to solve this problem. "
+                f"The best attempt (out of {loop_count} attempts) was:\n\n"
+                f"{best_result.value}\n\n"
+            ]
+            if feedback_lines:
+                prompt_parts.append(
+                    "However, this attempt had the following issues:\n"
+                    + "\n".join(feedback_lines)
+                    + "\n\n"
+                )
+            prompt_parts.append(
+                "Please improve upon the best attempt above to fully satisfy all requirements."
+            )
+
+            s2_action = Message(role="user", content="".join(prompt_parts))
+            return s2_action, original_context
+
+    async def _generate_and_validate(
+        self,
+        solver_backend: Backend,
+        action: Component,
+        ctx: Context,
+        original_action: Component,
+        reqs: list[Requirement],
+        session_backend: Backend,
+        format: type[BaseModelSubclass] | None,
+        model_options: dict | None,
+        tool_calls: bool,
+    ) -> tuple[ModelOutputThunk, Context, list[tuple[Requirement, ValidationResult]]]:
+        """Generate with a solver and validate the result.
+
+        Args:
+            solver_backend: Backend to use for generation.
+            action: Action/prompt to generate from.
+            ctx: Context for generation.
+            original_action: Original action (for parse validation).
+            reqs: Requirements to validate against.
+            session_backend: Fallback backend for validation.
+            format: Output format for structured outputs.
+            model_options: Model options for generation.
+            tool_calls: Whether to use tool calls.
+
+        Returns:
+            Tuple of (result, result_context, validation_scores).
+        """
+        # Generate
+        result, result_ctx = await solver_backend.generate_from_context(
+            action,
+            ctx=ctx,
+            format=format,
+            model_options=model_options,
+            tool_calls=tool_calls,
+        )
+        await result.avalue()
+
+        # Verify immutability invariant
+        assert result.parsed_repr == original_action.parse(result), (
+            "Core error: mot.parsed_repr should always be source_action_of_mot.parse(mot.value)!"
+        )
+
+        # Prepare and run validation
+        reqs_for_validation = self._prepare_requirements_for_validation(
+            reqs, model_options
+        )
+        val_scores = await mfuncs.avalidate(
+            reqs=reqs_for_validation,
+            context=result_ctx,
+            backend=session_backend,
+            output=result,
+            format=None,
+            model_options=model_options,
+        )
+        constraint_scores = list(zip(reqs, val_scores))
+
+        return result, result_ctx, constraint_scores
+
+    # =========================================================================
+    # Main Sample Method
+    # =========================================================================
 
     async def sample(
         self,
@@ -364,15 +528,29 @@ class SOFAISamplingStrategy(SamplingStrategy):
     ) -> SamplingResult[S]:
         """Execute SOFAI two-solver sampling strategy.
 
-        Phase 1: S1 Solver loop with feedback-based repair.
-        Phase 2: S2 Solver fallback if S1 fails.
+        SOFAI Flow Overview:
+        ====================
+        1. PHASE 1 - S1 Solver Loop:
+           - Generate candidate solution with fast S1 model
+           - Validate against requirements
+           - If success: return immediately
+           - If failure: generate repair feedback and iterate
+           - If no improvement detected: early exit to Phase 2
+
+        2. PHASE 2 - S2 Solver Fallback:
+           - Prepare context based on s2_solver_mode:
+             * fresh_start: clean slate with original prompt
+             * continue_chat: full S1 conversation history
+             * best_attempt: best S1 result with feedback summary
+           - Generate single attempt with slow S2 model
+           - Validate and return result (success or failure)
 
         Args:
             action: The component to sample (Instruction, Message, etc.).
-            context: The session context.
-            backend: The default backend (not used directly; S1/S2 backends are used instead).
+            context: The session context (must be ChatContext).
+            backend: Session backend (used for validation fallback).
             requirements: Requirements to validate against.
-            validation_ctx: Optional separate validation context.
+            validation_ctx: Optional separate validation context (unused).
             format: Output format for structured outputs.
             model_options: Model options to pass to backends.
             tool_calls: True if tool calls should be used.
@@ -380,87 +558,68 @@ class SOFAISamplingStrategy(SamplingStrategy):
         Returns:
             SamplingResult with success status and all generation history.
         """
-        # Context management
+        # ---------------------------------------------------------------------
+        # Setup and Validation
+        # ---------------------------------------------------------------------
         assert isinstance(context, ChatContext), (
             "SOFAI requires ChatContext for conversation management."
         )
 
         flog = FancyLogger.get_logger()
+        reqs: list[Requirement] = list(requirements) if requirements else []
 
-        # Storage for all attempts
+        # State tracking for all attempts
         sampled_results: list[ModelOutputThunk] = []
         sampled_scores: list[list[tuple[Requirement, ValidationResult]]] = []
         sampled_actions: list[Component] = []
         sample_contexts: list[Context] = []
 
-        # Merge requirements
-        reqs: list[Requirement] = []
-        if self.requirements is not None:
-            reqs += self.requirements
-        elif requirements is not None:
-            reqs += requirements
-        reqs = list(set(reqs))
-
-        # Progress tracking
-        show_progress = flog.getEffectiveLevel() <= FancyLogger.INFO
-
-        # --- PHASE 1: S1 Solver Loop ---
+        # ---------------------------------------------------------------------
+        # PHASE 1: S1 Solver Loop
+        # ---------------------------------------------------------------------
         flog.info(
             f"SOFAI: Starting S1 Solver ({self.s1_solver_backend.model_id}) "
             f"loop (budget={self.loop_budget})"
         )
 
-        previous_failed_set: set[str] = set()
-        success_flag = False
+        previous_failed_set: set[str | None] = set()
         loop_count = 0
+        next_action = deepcopy(action)
+        next_context: Context = context
 
-        loop_budget_range_iterator = (
+        show_progress = flog.getEffectiveLevel() <= FancyLogger.INFO
+        loop_iterator = (
             tqdm.tqdm(range(self.loop_budget), desc="S1 Solver")
             if show_progress
             else range(self.loop_budget)
         )
 
-        next_action = deepcopy(action)
-        next_context = context
-        original_context = context  # Keep reference to original for fresh_start mode
-
-        for _ in loop_budget_range_iterator:
+        for _ in loop_iterator:
             loop_count += 1
             if not show_progress:
                 flog.info(f"SOFAI S1: Running loop {loop_count} of {self.loop_budget}")
 
-            # Generate with S1 Solver
-            result, result_ctx = await self.s1_solver_backend.generate_from_context(
-                next_action,
+            # Generate and validate
+            result, result_ctx, constraint_scores = await self._generate_and_validate(
+                solver_backend=self.s1_solver_backend,
+                action=next_action,
                 ctx=next_context,
+                original_action=action,
+                reqs=reqs,
+                session_backend=backend,
                 format=format,
                 model_options=model_options,
                 tool_calls=tool_calls,
             )
-            await result.avalue()
 
-            # Ensure parsed_repr matches original action's parsing
-            result.parsed_repr = action.parse(result)
-
-            # Validate using mfuncs.avalidate (consistent with other strategies)
-            val_scores = await mfuncs.avalidate(
-                reqs=reqs,
-                context=result_ctx,
-                backend=backend,  # Use session backend for validation by default
-                output=result,
-                format=None,
-                model_options=model_options,
-            )
-            constraint_scores = list(zip(reqs, val_scores))
-
-            # Store results
+            # Store attempt
             sampled_results.append(result)
             sampled_scores.append(constraint_scores)
             sampled_actions.append(next_action)
             sample_contexts.append(result_ctx)
 
-            # Check success
-            if all(bool(s[1]) for s in constraint_scores):
+            # Check for success
+            if all(bool(score[1]) for score in constraint_scores):
                 flog.info(f"SOFAI S1: SUCCESS on attempt {loop_count}")
                 assert result._generate_log is not None
                 result._generate_log.is_final_result = True
@@ -474,8 +633,8 @@ class SOFAISamplingStrategy(SamplingStrategy):
                     sample_actions=sampled_actions,
                 )
 
-            # Log partial success
-            count_valid = len([s for s in constraint_scores if bool(s[1])])
+            # Log partial progress
+            count_valid = sum(1 for s in constraint_scores if bool(s[1]))
             flog.info(
                 f"SOFAI S1: FAILED attempt {loop_count}. "
                 f"Valid: {count_valid}/{len(constraint_scores)}"
@@ -485,170 +644,88 @@ class SOFAISamplingStrategy(SamplingStrategy):
             current_failed_set = {
                 req.description for req, val in constraint_scores if not val.as_bool()
             }
-
             if loop_count > 1 and current_failed_set == previous_failed_set:
                 flog.warning(
                     f"SOFAI S1: No improvement detected between attempt "
-                    f"{loop_count-1} and {loop_count}. Failing over to S2 Solver."
+                    f"{loop_count - 1} and {loop_count}. Failing over to S2 Solver."
                 )
                 break
-
             previous_failed_set = current_failed_set
 
-            # Repair for next iteration (if not last attempt)
+            # Prepare repair for next iteration
             if loop_count < self.loop_budget:
                 next_action, next_context = self.repair(
-                    next_context, result_ctx, sampled_actions, sampled_results, sampled_scores
+                    next_context,
+                    result_ctx,
+                    sampled_actions,
+                    sampled_results,
+                    sampled_scores,
                 )
 
-        # --- PHASE 2: S2 Solver Fallback ---
-        if not success_flag:
+        # ---------------------------------------------------------------------
+        # PHASE 2: S2 Solver Fallback
+        # ---------------------------------------------------------------------
+        flog.info(
+            f"SOFAI: S1 Solver completed {loop_count} attempts. "
+            f"Falling back to S2 Solver ({self.s2_solver_backend.model_id})."
+        )
+
+        # Prepare S2 context based on mode
+        s2_action, s2_context = self._prepare_s2_context(
+            s2_mode=self.s2_solver_mode,
+            original_action=action,
+            original_context=context,
+            last_result_ctx=result_ctx,
+            last_action=next_action,
+            sampled_results=sampled_results,
+            sampled_scores=sampled_scores,
+            loop_count=loop_count,
+        )
+
+        # Generate and validate with S2
+        result, result_ctx, constraint_scores = await self._generate_and_validate(
+            solver_backend=self.s2_solver_backend,
+            action=s2_action,
+            ctx=s2_context,
+            original_action=action,
+            reqs=reqs,
+            session_backend=backend,
+            format=format,
+            model_options=model_options,
+            tool_calls=tool_calls,
+        )
+
+        # Store S2 attempt
+        sampled_results.append(result)
+        sampled_scores.append(constraint_scores)
+        sampled_actions.append(s2_action)
+        sample_contexts.append(result_ctx)
+
+        # Check S2 success
+        assert result._generate_log is not None
+        result._generate_log.is_final_result = True
+
+        if all(bool(score[1]) for score in constraint_scores):
+            flog.info("SOFAI S2: SUCCESS")
+            return SamplingResult(
+                result_index=len(sampled_results) - 1,
+                success=True,
+                sample_generations=sampled_results,
+                sample_validations=sampled_scores,
+                sample_contexts=sample_contexts,
+                sample_actions=sampled_actions,
+            )
+        else:
+            count_valid = sum(1 for s in constraint_scores if bool(s[1]))
             flog.warning(
-                f"SOFAI: S1 Solver failed after {loop_count} attempts. "
-                f"Falling back to S2 Solver ({self.s2_solver_backend.model_id})."
+                f"SOFAI S2: FAILED. Valid: {count_valid}/{len(constraint_scores)}. "
+                f"Returning S2 Solver's attempt as final result."
             )
-
-            # Prepare context and action for S2 Solver based on mode
-            if self.s2_solver_mode == "fresh_start":
-                flog.info("SOFAI S2: Starting with fresh context (clean slate).")
-                context_for_s2 = original_context
-                s2_action = deepcopy(action)
-
-            elif self.s2_solver_mode == "continue_chat":
-                flog.info("SOFAI S2: Continuing from S1 Solver's conversation history.")
-                context_for_s2 = result_ctx
-                s2_action = next_action
-
-            else:  # best_attempt
-                flog.info("SOFAI S2: Receiving best S1 Solver attempt with feedback.")
-
-                # Find best attempt from S1 Solver
-                best_idx = self._select_best_attempt(sampled_scores)
-                best_result = sampled_results[best_idx]
-                best_validations = sampled_scores[best_idx]
-
-                # Count successes
-                passing_count = sum(1 for _, val in best_validations if val.as_bool())
-                flog.info(
-                    f"SOFAI S2: Best attempt: #{best_idx + 1} with "
-                    f"{passing_count}/{len(best_validations)} requirements passed."
-                )
-
-                # Build feedback summary from best attempt
-                failed_reqs = [
-                    (req, val) for req, val in best_validations if not val.as_bool()
-                ]
-                feedback_summary = []
-                for req, val in failed_reqs:
-                    if val.reason:
-                        feedback_summary.append(f"  - {val.reason}")
-                    else:
-                        feedback_summary.append(f"  - {req.description}")
-
-                # Build informative prompt for S2 Solver
-                best_attempt_prompt = (
-                    f"Previous attempts were made to solve this problem. "
-                    f"The best attempt (out of {loop_count} attempts) was:\n\n"
-                    f"{best_result.value}\n\n"
-                )
-
-                if feedback_summary:
-                    best_attempt_prompt += (
-                        f"However, this attempt had the following issues:\n"
-                        + "\n".join(feedback_summary) + "\n\n"
-                    )
-
-                if loop_count > 1:
-                    best_attempt_prompt += (
-                        f"Note: Other attempts were tried but had more issues. "
-                        f"Please improve upon the best attempt above to fully satisfy all requirements."
-                    )
-                else:
-                    best_attempt_prompt += (
-                        f"Please improve upon this attempt to fully satisfy all requirements."
-                    )
-
-                # Use fresh context (avoid clutter) with informative message
-                context_for_s2 = original_context
-                s2_action = Message(role="user", content=best_attempt_prompt)
-
-            # Generate ONCE with S2 Solver
-            result, result_ctx = await self.s2_solver_backend.generate_from_context(
-                s2_action,
-                ctx=context_for_s2,
-                format=format,
-                model_options=model_options,
-                tool_calls=tool_calls,
+            return SamplingResult(
+                result_index=len(sampled_results) - 1,
+                success=False,
+                sample_generations=sampled_results,
+                sample_validations=sampled_scores,
+                sample_contexts=sample_contexts,
+                sample_actions=sampled_actions,
             )
-            await result.avalue()
-
-            # Ensure parsed_repr matches original action's parsing
-            result.parsed_repr = action.parse(result)
-
-            # Validate S2 Solver result
-            val_scores = await mfuncs.avalidate(
-                reqs=reqs,
-                context=result_ctx,
-                backend=backend,
-                output=result,
-                format=None,
-                model_options=model_options,
-            )
-            constraint_scores = list(zip(reqs, val_scores))
-
-            # Store S2 Solver attempt
-            sampled_results.append(result)
-            sampled_scores.append(constraint_scores)
-            sampled_actions.append(s2_action)
-            sample_contexts.append(result_ctx)
-
-            # Check S2 Solver success
-            if all(bool(s[1]) for s in constraint_scores):
-                flog.info("SOFAI S2: SUCCESS")
-                assert result._generate_log is not None
-                result._generate_log.is_final_result = True
-
-                return SamplingResult(
-                    result_index=len(sampled_results) - 1,
-                    success=True,
-                    sample_generations=sampled_results,
-                    sample_validations=sampled_scores,
-                    sample_contexts=sample_contexts,
-                    sample_actions=sampled_actions,
-                )
-            else:
-                count_valid = len([s for s in constraint_scores if bool(s[1])])
-                flog.warning(
-                    f"SOFAI S2: FAILED. Valid: {count_valid}/{len(constraint_scores)}. "
-                    f"Returning S2 Solver's attempt as final result."
-                )
-
-                assert result._generate_log is not None
-                result._generate_log.is_final_result = True
-
-                return SamplingResult(
-                    result_index=len(sampled_results) - 1,
-                    success=False,
-                    sample_generations=sampled_results,
-                    sample_validations=sampled_scores,
-                    sample_contexts=sample_contexts,
-                    sample_actions=sampled_actions,
-                )
-
-        # This should never be reached, but handle gracefully
-        flog.error("SOFAI: Unexpected: Reached end of sample() without returning.")
-        best_failed_index = self.select_from_failure(
-            sampled_actions, sampled_results, sampled_scores
-        )
-
-        assert sampled_results[best_failed_index]._generate_log is not None
-        sampled_results[best_failed_index]._generate_log.is_final_result = True
-
-        return SamplingResult(
-            result_index=best_failed_index,
-            success=False,
-            sample_generations=sampled_results,
-            sample_validations=sampled_scores,
-            sample_contexts=sample_contexts,
-            sample_actions=sampled_actions,
-        )
